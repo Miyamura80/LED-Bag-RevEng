@@ -1,11 +1,11 @@
-# Python-Template
+# LED-Bag-RevEng
 
 <p align="center">
   <img src="media/banner.png" alt="2" width="400">
 </p>
 
 <p align="center">
-<b>Opinionated Python project stack. 🔋 Batteries included. </b>
+<b>LED backpack reverse engineering notes and tooling</b>
 </p>
 
 <p align="center">
@@ -89,4 +89,3 @@ This software uses the following tools:
 </a>
 
 Made with [contrib.rocks](https://contrib.rocks).
-
