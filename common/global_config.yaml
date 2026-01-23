@@ -1,0 +1,121 @@
+model_name: cerebras/gpt-oss-120b
+dot_global_config_health_check: true
+
+example_parent:
+  example_child: "example_value"
+
+########################################################
+# LLMs
+########################################################
+default_llm:
+  default_model: gemini/gemini-2.5-flash  # Switched from Cerebras for testing
+  fast_model: gemini/gemini-2.5-flash
+  cheap_model: gemini/gemini-2.5-flash
+  default_temperature: 0.5
+  default_max_tokens: 100000
+
+llm_config:
+  cache_enabled: false
+  retry:
+    max_attempts: 3
+    min_wait_seconds: 1
+    max_wait_seconds: 5
+  timeout:
+    # API request timeout (seconds) - how long to wait for LLM API response
+    api_timeout_seconds: 120
+    # Connection timeout (seconds) - how long to wait to establish connection
+    connect_timeout_seconds: 10
+
+########################################################
+# Agent chat
+########################################################
+agent_chat:
+  history_message_limit: 20
+  # Streaming configuration
+  streaming:
+    # Send heartbeat comments every N seconds to prevent client timeout
+    heartbeat_interval_seconds: 15
+    # Maximum time to wait for first token from LLM (seconds)
+    first_token_timeout_seconds: 60
+    # Maximum time for entire streaming operation (seconds)
+    max_streaming_duration_seconds: 300
+
+########################################################
+# Debugging
+########################################################
+logging:
+  verbose: true
+  format:
+    show_time: false
+    show_session_id: true
+    location:
+      enabled: true
+      show_file: true
+      show_function: true
+      show_line: true
+      # Configure which log levels show location information
+      show_for_info: false
+      show_for_debug: true
+      show_for_warning: true
+      show_for_error: true
+  levels:
+    debug: false  # Disable debug logs
+    info: true    # Show info logs
+    warning: true # Show warning logs
+    error: true   # Show error logs
+    critical: true # Show critical logs
+
+########################################################
+# Subscription
+########################################################
+subscription:
+  stripe:
+    # Single metered price with graduated tiers (Stripe recommended approach)
+    # First N units free, then charge per unit after that
+    # Create this price in Stripe Dashboard with:
+    #   - Billing scheme: Tiered
+    #   - Tiers mode: Graduated
+    #   - Usage type: Metered
+    #   - Tier 1: up_to=1000, unit_amount=0 (free included units)
+    #   - Tier 2: up_to=inf, unit_amount=1 (overage rate in cents)
+    price_ids:
+      test: price_1SaeJ4Kugya9tlosOgMWuJfi
+      prod: ""  # TODO: Set production price ID
+  # Metered billing configuration (for display/reference)
+  metered:
+    # Number of units included free (should match Stripe tier 1 threshold)
+    included_units: 1000
+    # Cost per unit after included (should match Stripe tier 2 rate, in cents)
+    overage_unit_amount: 1  # $0.01 per unit
+    # Unit label for display
+    unit_label: "units"
+  trial_period_days: 7
+  payment_retry:
+    max_attempts: 3
+
+########################################################
+# Stripe
+########################################################
+stripe:
+  api_version: "2024-11-20.acacia"
+  webhook:
+    url: "https://python-saas-template-dev.up.railway.app"
+
+########################################################
+# Telegram
+########################################################
+telegram:
+  chat_ids:
+    admin_alerts: "1560836485"
+    test: "1560836485" 
+
+########################################################
+# Referrals
+########################################################
+referrals:
+  # Length of generated referral codes (upper-case, unambiguous alphabet)
+  code_length: 10
+  # Optional credits award when a referral is claimed
+  credit_award:
+    referrer: 0
+    referee: 0
