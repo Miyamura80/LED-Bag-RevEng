@@ -1,14 +1,8 @@
-import pytest
-
 from src.verify_backpack import _matches_target
 from tests.test_template import TestTemplate
 
 
 class TestVerifyBackpack(TestTemplate):
-    @pytest.fixture(autouse=True)
-    def setup_shared_variables(self, setup):
-        pass
-
     def test_matches_target_by_address(self):
         assert _matches_target(
             device_name="YS6249181011L",

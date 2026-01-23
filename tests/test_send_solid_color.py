@@ -1,5 +1,3 @@
-import pytest
-
 from src.send_solid_color import (
     _build_payload_chunks,
     _parse_color,
@@ -11,10 +9,6 @@ from tests.test_template import TestTemplate
 
 
 class TestSendSolidColor(TestTemplate):
-    @pytest.fixture(autouse=True)
-    def setup_shared_variables(self, setup):
-        pass
-
     def test_parse_color_accepts_hex(self):
         assert _parse_color("#ff0000") == (255, 0, 0)
         assert _parse_color("00ff00") == (0, 255, 0)
