@@ -38,7 +38,9 @@ class TestSendSolidColor(TestTemplate):
     def test_solid_color_gif_creates_valid_gif(self):
         """Verify GIF creation for solid colors."""
         gif = build_solid_color_gif(width=16, height=16, color="#ff0000")
-        assert gif[:6] == b"GIF89a"
+        # Check GIF header (GIF87a or GIF89a are both valid)
+        assert gif[:3] == b"GIF"
+        assert gif[3:6] in (b"87a", b"89a")
         assert gif[-1] == 0x3B
 
     def test_solid_color_packets_have_magic_header(self):

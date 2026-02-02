@@ -70,8 +70,9 @@ class TestLedProtocol(TestTemplate):
     def test_solid_color_gif_valid(self):
         """Verify solid color GIF is valid GIF format."""
         gif = build_solid_color_gif(width=16, height=16, color="#ff0000")
-        # Check GIF header
-        assert gif[:6] == b"GIF89a"
+        # Check GIF header (GIF87a or GIF89a are both valid)
+        assert gif[:3] == b"GIF"
+        assert gif[3:6] in (b"87a", b"89a")
         # Check trailer
         assert gif[-1] == 0x3B
 

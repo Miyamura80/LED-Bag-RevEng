@@ -36,7 +36,7 @@ build-backend = "hatchling.build"
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/python_template"]
+packages = ["src"]
 
 [tool.vulture]
 exclude = [

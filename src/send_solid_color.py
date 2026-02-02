@@ -1,7 +1,7 @@
 """
-CLI script to send a solid color to a LOY SPACE LED backpack.
+CLI script to send colors and patterns to a LOY SPACE LED backpack.
 
-Uses the YS-protocol (aa55ffff) to upload a solid color GIF.
+Uses the YS-protocol (aa55ffff) to upload GIF images.
 """
 
 import argparse
@@ -21,7 +21,7 @@ from src.utils.logging_config import setup_logging
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Send a solid color to a LOY SPACE LED backpack",
+        description="Send colors and patterns to a LOY SPACE LED backpack",
     )
     parser.add_argument(
         "--name",
@@ -40,6 +40,25 @@ def _parse_args() -> argparse.Namespace:
         type=str,
         default="#ff0000",
         help="Hex color, e.g. #ff0000",
+    )
+    parser.add_argument(
+        "--pattern",
+        type=str,
+        choices=["solid", "grid"],
+        default="solid",
+        help="Pattern type: solid color or checkerboard grid",
+    )
+    parser.add_argument(
+        "--grid-size",
+        type=int,
+        default=16,
+        help="Grid cell size in pixels (for grid pattern)",
+    )
+    parser.add_argument(
+        "--color2",
+        type=str,
+        default="#000000",
+        help="Second color for grid pattern",
     )
     parser.add_argument(
         "--width",
@@ -74,7 +93,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--clear",
         action="store_true",
-        help="Send reset/clear command before the color",
+        help="Send reset/clear command before the pattern",
     )
     parser.add_argument(
         "--brightness",
@@ -114,7 +133,10 @@ async def main() -> None:
         height = DEFAULT_HEIGHT
 
     log.info("Using matrix size: {}x{}", width, height)
-    log.info("Using color: {}", args.color)
+    log.info("Pattern: {}", args.pattern)
+    log.info("Color: {}", args.color)
+    if args.pattern == "grid":
+        log.info("Color2: {}, Grid size: {}", args.color2, args.grid_size)
     log.info("Write characteristic: {}", args.char_uuid)
     if address:
         log.info("Target address: {}", address)
@@ -131,7 +153,17 @@ async def main() -> None:
             if args.brightness < 0 or args.brightness > 255:
                 raise ValueError("Brightness must be 0-255")
             await client.set_brightness(args.brightness)
-        await client.set_solid_color(args.color, width=width, height=height)
+
+        if args.pattern == "grid":
+            await client.set_grid_pattern(
+                width=width,
+                height=height,
+                grid_size=args.grid_size,
+                color1=args.color,
+                color2=args.color2,
+            )
+        else:
+            await client.set_solid_color(args.color, width=width, height=height)
     log.info("Done.")
 
 

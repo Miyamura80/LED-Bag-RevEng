@@ -7,7 +7,10 @@ similar YS-prefixed LED matrix devices. See docs/protocol.md for details.
 Reference: https://github.com/mtpiercey/ble-led-matrix-controller
 """
 
+import io
 import re
+
+from PIL import Image
 
 # BLE service and characteristics (from APK)
 SERVICE_UUID = "0000FFF0-0000-1000-8000-00805F9B34FB"
@@ -239,7 +242,7 @@ def build_solid_color_gif(
     color: str = "#ff0000",
 ) -> bytes:
     """
-    Build a minimal GIF with a solid color.
+    Build a GIF with a solid color using Pillow for proper encoding.
 
     Args:
         width: Display width in pixels.
@@ -251,45 +254,24 @@ def build_solid_color_gif(
     """
     r, g, b = _parse_color(color)
 
-    # Build minimal GIF89a
-    gif = bytearray()
+    # Create paletted image
+    img = Image.new("P", (width, height))
 
-    # Header
-    gif.extend(b"GIF89a")
+    # Set palette with our color as index 0
+    palette = [r, g, b, 0, 0, 0]  # Color 0: our color, Color 1: black
+    palette.extend([0] * (256 * 3 - len(palette)))
+    img.putpalette(palette)
 
-    # Logical screen descriptor
-    gif.extend(width.to_bytes(2, "little"))
-    gif.extend(height.to_bytes(2, "little"))
-    gif.append(0x80)  # Global color table flag, 1 bit color depth
-    gif.append(0x00)  # Background color index
-    gif.append(0x00)  # Pixel aspect ratio
+    # Fill with color index 0
+    pixels = img.load()
+    for y in range(height):
+        for x in range(width):
+            pixels[x, y] = 0
 
-    # Global color table (2 colors: our color and black)
-    gif.extend([r, g, b])  # Color 0: our solid color
-    gif.extend([0, 0, 0])  # Color 1: black
-
-    # Image descriptor
-    gif.append(0x2C)  # Image separator
-    gif.extend([0x00, 0x00])  # Left position
-    gif.extend([0x00, 0x00])  # Top position
-    gif.extend(width.to_bytes(2, "little"))
-    gif.extend(height.to_bytes(2, "little"))
-    gif.append(0x00)  # No local color table
-
-    # Image data (LZW minimum code size + compressed data)
-    gif.append(0x02)  # LZW minimum code size
-
-    # Minimal LZW compressed data for solid color 0
-    # Clear code (4) + color 0 + end code (5)
-    block = bytearray([0x04, 0x01])  # Minimal valid LZW stream
-    gif.append(len(block))  # Sub-block size
-    gif.extend(block)
-    gif.append(0x00)  # Block terminator
-
-    # GIF trailer
-    gif.append(0x3B)
-
-    return bytes(gif)
+    # Save to bytes
+    buf = io.BytesIO()
+    img.save(buf, format="GIF")
+    return buf.getvalue()
 
 
 def build_solid_color_packets(
@@ -309,6 +291,76 @@ def build_solid_color_packets(
         List of packets ready to send.
     """
     gif_data = build_solid_color_gif(width, height, color)
+    return build_gif_upload_packets(gif_data)
+
+
+def build_grid_pattern_gif(
+    width: int = DEFAULT_WIDTH,
+    height: int = DEFAULT_HEIGHT,
+    grid_size: int = 8,
+    color1: str = "#ffffff",
+    color2: str = "#000000",
+) -> bytes:
+    """
+    Build a GIF with a checkerboard/grid pattern using Pillow.
+
+    Args:
+        width: Display width in pixels.
+        height: Display height in pixels.
+        grid_size: Size of each grid cell in pixels.
+        color1: First color (hex string).
+        color2: Second color (hex string).
+
+    Returns:
+        Raw GIF bytes.
+    """
+    r1, g1, b1 = _parse_color(color1)
+    r2, g2, b2 = _parse_color(color2)
+
+    # Create paletted image
+    img = Image.new("P", (width, height))
+
+    # Set palette
+    palette = [r1, g1, b1, r2, g2, b2]
+    palette.extend([0] * (256 * 3 - len(palette)))
+    img.putpalette(palette)
+
+    # Draw checkerboard pattern
+    pixels = img.load()
+    for y in range(height):
+        for x in range(width):
+            cell_x = x // grid_size
+            cell_y = y // grid_size
+            color_idx = (cell_x + cell_y) % 2
+            pixels[x, y] = color_idx
+
+    # Save to bytes
+    buf = io.BytesIO()
+    img.save(buf, format="GIF")
+    return buf.getvalue()
+
+
+def build_grid_pattern_packets(
+    width: int = DEFAULT_WIDTH,
+    height: int = DEFAULT_HEIGHT,
+    grid_size: int = 8,
+    color1: str = "#ffffff",
+    color2: str = "#000000",
+) -> list[bytearray]:
+    """
+    Build all packets to display a grid/checkerboard pattern.
+
+    Args:
+        width: Display width in pixels.
+        height: Display height in pixels.
+        grid_size: Size of each grid cell in pixels.
+        color1: First color (hex string).
+        color2: Second color (hex string).
+
+    Returns:
+        List of packets ready to send.
+    """
+    gif_data = build_grid_pattern_gif(width, height, grid_size, color1, color2)
     return build_gif_upload_packets(gif_data)
 
 

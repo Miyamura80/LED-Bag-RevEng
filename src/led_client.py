@@ -16,6 +16,7 @@ from src.led_protocol import (
     NOTIFY_CHAR_UUID,
     WRITE_CHAR_UUID,
     build_brightness_command,
+    build_grid_pattern_packets,
     build_ready_command,
     build_reset_command,
     build_solid_color_packets,
@@ -180,6 +181,49 @@ class LedBackpackClient:
     async def clear(self) -> None:
         """Send reset/clear command (calls reset())."""
         await self.reset()
+
+    async def set_grid_pattern(
+        self,
+        *,
+        width: int = DEFAULT_WIDTH,
+        height: int = DEFAULT_HEIGHT,
+        grid_size: int = 8,
+        color1: str = "#ffffff",
+        color2: str = "#000000",
+    ) -> None:
+        """Send a grid/checkerboard pattern using GIF upload protocol."""
+        log.info(
+            "Sending grid pattern {}x{} (cell size {})",
+            width,
+            height,
+            grid_size,
+        )
+
+        packets = build_grid_pattern_packets(width, height, grid_size, color1, color2)
+        log.info("Built {} packet(s) for upload", len(packets))
+
+        # Send reset and ready with delays
+        log.info("Step 1: Reset")
+        await self._write_packet(packets[0], wait_ack=False)
+        await asyncio.sleep(0.5)
+
+        log.info("Step 2: Ready")
+        await self._write_packet(packets[1], wait_ack=False)
+        await asyncio.sleep(0.5)
+
+        # Send data packets with ack waiting
+        data_packets = packets[2:-2]
+        log.info("Step 3: Upload {} data packet(s)", len(data_packets))
+        for i, packet in enumerate(data_packets, start=1):
+            log.info("Data packet {}/{} ({} bytes)", i, len(data_packets), len(packet))
+            await self._write_packet(packet, wait_ack=True, timeout=0.75)
+
+        # Send upload complete (twice)
+        log.info("Step 4: Upload complete")
+        await self._write_packet(packets[-2], wait_ack=False)
+        await self._write_packet(packets[-1], wait_ack=False)
+
+        log.info("Grid pattern upload complete")
 
     async def set_brightness(self, level: int) -> None:
         """Set brightness 0-255 (mapped to 0-15 internally)."""
