@@ -480,6 +480,473 @@ def build_graffiti_fill_command(
 
 
 # =============================================================================
+# Program Playback Control Commands - DISCOVERED FROM APK DECOMPILATION
+# =============================================================================
+#
+# The pgm_play command controls program playback (stop, play, etc.)
+# This is needed before rt_draw commands will be visible.
+#
+# Command index: 12 (pgm_play in command table)
+#
+
+PGM_PLAY_CMD_INDEX = 12
+
+
+def build_pgm_play_stop(sno: int = 0) -> bytearray:
+    """
+    Build command to stop program playback.
+
+    This should be called before rt_draw commands to make them visible.
+    The device plays stored GIFs by default; this stops that playback.
+
+    Args:
+        sno: Sequence number (optional).
+
+    Returns:
+        Complete packet ready to send via BLE.
+    """
+    # pgm_play payload: [54, len, model, index]
+    # model=0 seems to be stop/pause, index=255 is default
+    payload = bytearray([54, 2, 0, 255])
+
+    return _build_ys_command_packet(payload, PGM_PLAY_CMD_INDEX, sno)
+
+
+def _build_ys_command_packet(payload: bytes, cmd_index: int, sno: int = 0) -> bytearray:
+    """
+    Build a generic YS-protocol command packet.
+
+    Args:
+        payload: Command-specific payload bytes.
+        cmd_index: Command index in the YS command table.
+        sno: Sequence number.
+
+    Returns:
+        Complete packet ready to send via BLE.
+    """
+    # Calculate lengths
+    inner_len = len(payload) + 4  # +4 for sno(2) + flags(1) + cmd_idx(1)
+    c = 10 + len(payload) + 2  # header(10) + payload + checksums(2)
+
+    packet = bytearray()
+
+    # Length prefix (2 bytes, little-endian)
+    packet.extend([c & 0xFF, (c >> 8) & 0xFF])
+
+    # Magic header: 0xAA55 0xFFFF
+    packet.extend([0xAA, 0x55, 0xFF, 0xFF])
+
+    # Payload length + 4 (2 bytes, little-endian)
+    packet.extend([inner_len & 0xFF, (inner_len >> 8) & 0xFF])
+
+    # Sequence number (2 bytes, little-endian)
+    packet.extend([sno & 0xFF, (sno >> 8) & 0xFF])
+
+    # Command flags: 193 (0xC1) with checksum
+    packet.append(0xC1)
+
+    # Command index
+    packet.append(cmd_index)
+
+    # Payload
+    packet.extend(payload)
+
+    # Checksum: 16-bit sum of bytes from offset 2 (after length prefix)
+    checksum = sum(packet[2:]) & 0xFFFF
+    packet.extend([checksum & 0xFF, (checksum >> 8) & 0xFF])
+
+    return packet
+
+
+# =============================================================================
+# Game Mode Command - Required before rt_draw
+# =============================================================================
+#
+# The game command (index 31) with id=16 enters "graffiti mode" which stops
+# the default idle animation and allows rt_draw commands to appear on a
+# clean black background.
+#
+# Command payload: [0x30, 0x01, id+128] where id=16 for graffiti mode
+#
+
+GAME_CMD_BYTE = 0x02  # Command byte for game (w=2 in ye function)
+
+
+def build_game_mode(game_id: int = 16) -> bytearray:
+    """
+    Build game command to enter drawing/graffiti mode.
+
+    Args:
+        game_id: Game mode ID. 16 = graffiti/drawing mode.
+
+    Returns:
+        Complete packet ready to send via BLE.
+    """
+    # Payload from case 31 in ye(): [48, 1, id+128]
+    payload = bytes([0x30, 0x01, game_id + 128])
+
+    length = len(payload) + 6
+    packet = bytearray()
+    packet.extend([0xAA, 0x55, 0xFF, 0xFF])
+    packet.append(length)
+    packet.extend([0x00, 0x00, 0x00])
+    packet.append(0xC1)
+    packet.append(GAME_CMD_BYTE)
+    packet.extend(payload)
+
+    checksum1 = sum(packet) % 256
+    checksum2 = sum(packet) // 256 % 256
+    packet.extend([checksum1, checksum2])
+
+    return packet
+
+
+# =============================================================================
+# Real-Time Draw (rt_draw) Commands - DISCOVERED FROM APK DECOMPILATION
+# =============================================================================
+#
+# The rt_draw command allows real-time pixel drawing without uploading a full GIF.
+# This is used by the "涂鸦" (graffiti/doodle) feature in the LOY SPACE app.
+#
+# IMPORTANT: Send build_game_mode(16) first to enter graffiti mode and stop
+# the default idle animation.
+#
+# Command index: 32
+# Packet header: 0x2A 0xBE (bytes 42, 190)
+#
+
+# rt_draw command constants
+# Note: The internal case number is 32, but the actual command byte sent is 2
+# This matches how ye() function works: w=2 is default and unchanged for rt_draw
+RT_DRAW_CMD_BYTE = 2  # The actual byte sent in packet (w value from ye function)
+RT_DRAW_TYPE_RAW = 0  # Raw pixel data in rectangle
+RT_DRAW_TYPE_RECT = 1  # Fill rectangle with color
+RT_DRAW_TYPE_PIXELS = 16  # Draw pixels at coordinates
+
+
+def _rgb_to_color_int(r: int, g: int, b: int) -> int:
+    """Convert RGB to 24-bit color integer (R + G<<8 + B<<16)."""
+    return r + (g << 8) + (b << 16)
+
+
+def _color_int_to_bytes(color: int) -> bytes:
+    """Convert 24-bit color int to 3 bytes (R, G, B)."""
+    return bytes([color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF])
+
+
+def _build_rt_draw_packet(payload: bytes, sno: int = 0) -> bytearray:
+    """
+    Wrap rt_draw payload in YS-protocol packet.
+
+    Packet structure (CMD_RESET style - verified working):
+    - 4 bytes: magic 0xAA55FFFF
+    - 1 byte: length (payload + 6)
+    - 2 bytes: index (little-endian), can be 0
+    - 1 byte: padding (0x00)
+    - 1 byte: command flags (0xC1)
+    - 1 byte: command index (0x02 for rt_draw)
+    - N bytes: payload
+    - 2 bytes: checksum (mod256 + highbyte of sum)
+    """
+    # Length byte = payload_len + 6 (matching CMD_RESET pattern)
+    length = len(payload) + 6
+
+    packet = bytearray()
+
+    # Magic header
+    packet.extend([0xAA, 0x55, 0xFF, 0xFF])
+
+    # 1-byte length
+    packet.append(length & 0xFF)
+
+    # 2-byte index (LE) + 1-byte padding
+    packet.extend([sno & 0xFF, (sno >> 8) & 0xFF, 0x00])
+
+    # Command flags and index
+    packet.append(0xC1)
+    packet.append(RT_DRAW_CMD_BYTE)
+
+    # Payload
+    packet.extend(payload)
+
+    # Checksum: mod256 + highbyte
+    checksum1 = sum(packet) % 256
+    checksum2 = sum(packet) // 256 % 256
+    packet.extend([checksum1, checksum2])
+
+    return packet
+
+
+def build_rt_draw_fill_rect(
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+    r: int = 0,
+    g: int = 0,
+    b: int = 0,
+    sno: int = 0,
+) -> bytearray:
+    """
+    Build rt_draw command to fill a rectangle with a solid color.
+
+    This can be used to clear the screen (fill with black) or draw solid rectangles.
+
+    Args:
+        x0, y0: Top-left corner coordinates.
+        x1, y1: Bottom-right corner coordinates.
+        r, g, b: RGB color values (0-255). Default is black (0, 0, 0).
+        sno: Sequence number (optional).
+
+    Returns:
+        Complete packet ready to send via BLE.
+
+    Example:
+        # Clear screen to black (96x128 display)
+        packet = build_rt_draw_fill_rect(0, 0, 95, 127)
+
+        # Draw red rectangle
+        packet = build_rt_draw_fill_rect(10, 10, 50, 50, r=255)
+    """
+    color = _rgb_to_color_int(r, g, b)
+
+    # Type 1 payload: [50, 13, 1, R, G, B, type_rect, x0_lo, x0_hi, ...]
+    payload = bytearray(15)
+    payload[0] = 50  # TLV tag
+    payload[1] = 13  # Length
+    payload[2] = RT_DRAW_TYPE_RECT  # Type 1 = fill rect
+    payload[3:6] = _color_int_to_bytes(color)
+    payload[6] = 0  # type_rect = 0 (fill)
+    payload[7] = x0 & 0xFF
+    payload[8] = (x0 >> 8) & 0xFF
+    payload[9] = y0 & 0xFF
+    payload[10] = (y0 >> 8) & 0xFF
+    payload[11] = x1 & 0xFF
+    payload[12] = (x1 >> 8) & 0xFF
+    payload[13] = y1 & 0xFF
+    payload[14] = (y1 >> 8) & 0xFF
+
+    return _build_rt_draw_packet(bytes(payload), sno)
+
+
+def build_rt_draw_clear_screen(
+    width: int = DEFAULT_WIDTH,
+    height: int = DEFAULT_HEIGHT,
+    sno: int = 0,
+) -> bytearray:
+    """
+    Build rt_draw command to clear the screen (fill with black).
+
+    Args:
+        width: Screen width (default 96).
+        height: Screen height (default 128).
+        sno: Sequence number (optional).
+
+    Returns:
+        Complete packet ready to send via BLE.
+    """
+    return build_rt_draw_fill_rect(0, 0, width - 1, height - 1, sno=sno)
+
+
+def _encode_length(length: int) -> bytes:
+    """Encode length using variable-length encoding (protobuf-style)."""
+    if length < 128:
+        return bytes([length])
+    elif length < 16384:
+        return bytes([0x80 | (length & 0x7F), (length >> 7) & 0x7F])
+    else:
+        return bytes(
+            [
+                0x80 | (length & 0x7F),
+                0x80 | ((length >> 7) & 0x7F),
+                (length >> 14) & 0x7F,
+            ]
+        )
+
+
+def build_rt_draw_bitmap(
+    x0: int,
+    y0: int,
+    width: int,
+    height: int,
+    bitmap: list[list[int]],
+    r: int = 255,
+    g: int = 255,
+    b: int = 255,
+    sno: int = 0,
+) -> bytearray:
+    """
+    Build rt_draw command with bitmap data (type 0).
+
+    This sends a rectangular region with 1-bit-per-pixel data, which is much
+    faster than sending individual pixels or rectangles.
+
+    Args:
+        x0, y0: Top-left corner coordinates.
+        width: Width of the bitmap region.
+        height: Height of the bitmap region.
+        bitmap: 2D list of pixel values (0 = off, 1 = on). [row][col] format.
+        r, g, b: RGB color for "on" pixels.
+        sno: Sequence number.
+
+    Returns:
+        Complete packet ready to send via BLE.
+
+    Example:
+        # Draw a simple 8x8 pattern
+        bitmap = [[1 if (x + y) % 2 == 0 else 0 for x in range(8)] for y in range(8)]
+        packet = build_rt_draw_bitmap(10, 10, 8, 8, bitmap, r=255, g=0, b=0)
+    """
+    color = _rgb_to_color_int(r, g, b)
+
+    # Calculate bytes per row (ceil(width / 8))
+    bytes_per_row = (width + 7) // 8
+
+    # Total payload size: 12 (header) + height * bytes_per_row (bitmap data)
+    bitmap_size = height * bytes_per_row
+    inner_len = 12 + bitmap_size
+
+    # Encode inner length
+    len_bytes = _encode_length(inner_len)
+    len_size = len(len_bytes)
+
+    # Build payload
+    payload = bytearray(1 + len_size + inner_len)
+    payload[0] = 50  # TLV tag
+
+    # Copy length bytes
+    for i, b in enumerate(len_bytes):
+        payload[1 + i] = b
+
+    offset = 1 + len_size
+
+    # Type = 0 (bitmap)
+    payload[offset] = RT_DRAW_TYPE_RAW
+    offset += 1
+
+    # Color (3 bytes)
+    payload[offset : offset + 3] = _color_int_to_bytes(color)
+    offset += 3
+
+    # Coordinates (x0, y0, x1, y1 as 16-bit LE)
+    x1 = x0 + width - 1
+    y1 = y0 + height - 1
+    payload[offset] = x0 & 0xFF
+    payload[offset + 1] = (x0 >> 8) & 0xFF
+    payload[offset + 2] = y0 & 0xFF
+    payload[offset + 3] = (y0 >> 8) & 0xFF
+    payload[offset + 4] = x1 & 0xFF
+    payload[offset + 5] = (x1 >> 8) & 0xFF
+    payload[offset + 6] = y1 & 0xFF
+    payload[offset + 7] = (y1 >> 8) & 0xFF
+    offset += 8
+
+    # Pack bitmap data (1 bit per pixel, MSB first)
+    for row_idx in range(height):
+        row = bitmap[row_idx] if row_idx < len(bitmap) else [0] * width
+        byte_val = 0
+        bit_pos = 7
+        for col_idx in range(width):
+            pixel = row[col_idx] if col_idx < len(row) else 0
+            if pixel:
+                byte_val |= 1 << bit_pos
+            bit_pos -= 1
+            if bit_pos < 0:
+                payload[offset] = byte_val
+                offset += 1
+                byte_val = 0
+                bit_pos = 7
+        # Write remaining bits if width is not a multiple of 8
+        if bit_pos < 7:
+            payload[offset] = byte_val
+            offset += 1
+
+    return _build_rt_draw_packet(bytes(payload), sno)
+
+
+def build_rt_draw_pixels(
+    pixels: list[tuple[int, int]],
+    r: int = 255,
+    g: int = 255,
+    b: int = 255,
+    sno: int = 0,
+) -> bytearray:
+    """
+    Build rt_draw command to draw pixels at specific coordinates.
+
+    Args:
+        pixels: List of (x, y) coordinate tuples.
+        r, g, b: RGB color values (0-255). Default is white.
+        sno: Sequence number (optional).
+
+    Returns:
+        Complete packet ready to send via BLE.
+
+    Example:
+        # Draw 3 red pixels
+        packet = build_rt_draw_pixels([(10, 20), (11, 20), (12, 20)], r=255, g=0, b=0)
+    """
+    if not pixels:
+        raise ValueError("pixels list cannot be empty")
+
+    color = _rgb_to_color_int(r, g, b)
+
+    # Calculate bounding box
+    xs = [p[0] for p in pixels]
+    ys = [p[1] for p in pixels]
+    x0, x1 = min(xs), max(xs)
+    y0, y1 = min(ys), max(ys)
+    width = x1 - x0 + 1
+    height = y1 - y0 + 1
+
+    # Create bitmap (1 bit per pixel, packed into bytes)
+    bitmap = [0] * (width * height)
+    for x, y in pixels:
+        idx = (x - x0) + (y - y0) * width
+        bitmap[idx] = 1
+
+    # Pack bitmap into bytes (8 pixels per byte, MSB first)
+    bitmap_bytes = bytearray()
+    for row in range(height):
+        row_offset = row * width
+        byte_val = 0
+        bit_pos = 7
+        for col in range(width):
+            byte_val += bitmap[row_offset + col] << bit_pos
+            if bit_pos == 0:
+                bitmap_bytes.append(byte_val)
+                byte_val = 0
+                bit_pos = 7
+            else:
+                bit_pos -= 1
+        if bit_pos < 7:
+            bitmap_bytes.append(byte_val)
+
+    # Build payload
+    # Type 0 format: [50, len, type=0, R, G, B, x0, y0, x1, y1, bitmap...]
+    payload_len = 12 + len(bitmap_bytes)
+
+    # Use variable-length encoding for payload length
+    if payload_len < 128:
+        len_bytes = bytes([payload_len])
+    else:
+        len_bytes = bytes([0x81, payload_len & 0xFF])
+
+    payload = bytearray()
+    payload.append(50)  # TLV tag
+    payload.extend(len_bytes)
+    payload.append(RT_DRAW_TYPE_RAW)  # Type 0 = raw bitmap
+    payload.extend(_color_int_to_bytes(color))
+    payload.extend([x0 & 0xFF, (x0 >> 8) & 0xFF])
+    payload.extend([y0 & 0xFF, (y0 >> 8) & 0xFF])
+    payload.extend([x1 & 0xFF, (x1 >> 8) & 0xFF])
+    payload.extend([y1 & 0xFF, (y1 >> 8) & 0xFF])
+    payload.extend(bitmap_bytes)
+
+    return _build_rt_draw_packet(bytes(payload), sno)
+
+
+# =============================================================================
 # Legacy exports for backwards compatibility
 # =============================================================================
 

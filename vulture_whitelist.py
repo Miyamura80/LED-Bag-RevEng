@@ -15,6 +15,13 @@ from src.led_protocol import (
     build_graffiti_init_sequence,
     build_graffiti_pixel_batch,
     build_graffiti_fill_command,
+    # rt_draw commands - discovered from APK, public API for real-time drawing
+    RT_DRAW_CMD_BYTE,
+    RT_DRAW_TYPE_PIXELS,
+    build_rt_draw_clear_screen,
+    build_rt_draw_pixels,
+    build_pgm_play_stop,
+    GAME_CMD_BYTE,
 )
 
 # Probe characteristics - intentionally unused constant for reference
@@ -35,4 +42,11 @@ _ = (
     build_graffiti_fill_command,
     GRAFFITI_CHAR_PREFIXES,
     get_device_info,
+    # rt_draw commands
+    RT_DRAW_CMD_BYTE,
+    RT_DRAW_TYPE_PIXELS,
+    build_rt_draw_clear_screen,
+    build_rt_draw_pixels,
+    build_pgm_play_stop,
+    GAME_CMD_BYTE,
 )
