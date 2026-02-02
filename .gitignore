@@ -169,3 +169,8 @@ cython_debug/
 
 # macOS Finder metadata
 .DS_Store
+
+# Pulled APKs and decompiled output (reverse engineering); do not commit
+apk/*.apk
+apk/decompiled/
+apk/extracted_assets/

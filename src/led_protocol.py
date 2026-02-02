@@ -147,8 +147,8 @@ def _generate_header(payload_hex: str, index: int, total_packets: int) -> str:
     # Constant command header (27 bytes = 54 hex chars)
     header += "c1020901010c01000d01000e0100140301090a11040001000a1207"
 
-    # Total number of packets
-    header += f"{total_packets:02x}"
+    # Total number of packets (1 byte, max 255)
+    header += f"{min(total_packets, 255):02x}"
 
     # Packet index again
     header += f"{index:04x}00"

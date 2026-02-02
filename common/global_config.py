@@ -140,13 +140,13 @@ class Config(BaseSettings):
     llm_config: LlmConfig
     logging: LoggingConfig
 
-    # Environment variables (required)
-    DEV_ENV: str
-    OPENAI_API_KEY: str
-    ANTHROPIC_API_KEY: str
-    GROQ_API_KEY: str
-    PERPLEXITY_API_KEY: str
-    GEMINI_API_KEY: str
+    # Environment variables (optional for BLE-only scripts; required for LLM features)
+    DEV_ENV: str = "dev"
+    OPENAI_API_KEY: str = ""
+    ANTHROPIC_API_KEY: str = ""
+    GROQ_API_KEY: str = ""
+    PERPLEXITY_API_KEY: str = ""
+    GEMINI_API_KEY: str = ""
 
     # Runtime environment (computed)
     is_local: bool = Field(default=False)

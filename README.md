@@ -58,6 +58,45 @@ Opinionated Python stack for fast development. The `saas` branch extends `main` 
 - `make banner` - create a new banner that makes the README nice 😊
 - `make test` - runs all tests defined by `TEST_TARGETS = tests/folder1 tests/folder2`
 
+### LED backpack control
+
+Control a LOY SPACE LED backpack over BLE (macOS/Linux with `bleak`).
+
+**Connect first** (power on backpack, disconnect other BLE apps, then):
+
+```bash
+uv run python -m src.verify_backpack --name YS6249
+```
+
+You should see "Connected: True" and GATT services. See [docs/protocol.md](docs/protocol.md) for more options.
+
+**CLI** (after connection works):
+
+```bash
+uv run python -m src.send_solid_color --color "#ff0000" --clear
+uv run python -m src.send_solid_color --name YS6249 --brightness 200
+```
+
+**Python API**:
+
+```python
+import asyncio
+from src.led_client import LedBackpackClient, discover_backpack
+
+async def main():
+    address, width, height = await discover_backpack(name="YS6249")
+    if not address:
+        return
+    async with LedBackpackClient(address) as client:
+        await client.clear()
+        await client.set_solid_color("#00ff00", width=width or 96, height=height or 16)
+        await client.set_brightness(180)
+
+asyncio.run(main())
+```
+
+Protocol details: [docs/protocol.md](docs/protocol.md).
+
 
 
 ## Configuration

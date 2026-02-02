@@ -16,6 +16,7 @@ from src.led_protocol import (
     NOTIFY_CHAR_UUID,
     WRITE_CHAR_UUID,
     build_brightness_command,
+    build_gif_upload_packets,
     build_grid_pattern_packets,
     build_ready_command,
     build_reset_command,
@@ -153,6 +154,36 @@ class LedBackpackClient:
 
         # Get all packets (includes reset, ready, data, complete)
         packets = build_solid_color_packets(width, height, color)
+        log.info("Built {} packet(s) for upload", len(packets))
+
+        # Send reset and ready with delays
+        log.info("Step 1: Reset")
+        await self._write_packet(packets[0], wait_ack=False)
+        await asyncio.sleep(0.5)
+
+        log.info("Step 2: Ready")
+        await self._write_packet(packets[1], wait_ack=False)
+        await asyncio.sleep(0.5)
+
+        # Send data packets with ack waiting
+        data_packets = packets[2:-2]
+        log.info("Step 3: Upload {} data packet(s)", len(data_packets))
+        for i, packet in enumerate(data_packets, start=1):
+            log.info("Data packet {}/{} ({} bytes)", i, len(data_packets), len(packet))
+            await self._write_packet(packet, wait_ack=True, timeout=0.75)
+
+        # Send upload complete (twice)
+        log.info("Step 4: Upload complete")
+        await self._write_packet(packets[-2], wait_ack=False)
+        await self._write_packet(packets[-1], wait_ack=False)
+
+        log.info("Upload sequence complete")
+
+    async def upload_gif(self, gif_data: bytes) -> None:
+        """Upload raw GIF data to the backpack."""
+        log.info("Uploading GIF ({} bytes)", len(gif_data))
+
+        packets = build_gif_upload_packets(gif_data)
         log.info("Built {} packet(s) for upload", len(packets))
 
         # Send reset and ready with delays

@@ -6,9 +6,10 @@ from bleak import BleakClient, BleakScanner
 from bleak.backends.device import BLEDevice
 from loguru import logger as log
 
+from src.led_protocol import SERVICE_UUID as LOY_SPACE_SERVICE_UUID
 from src.utils.logging_config import setup_logging
 
-
+# Service UUIDs we consider a match when no --name/--address given
 COOLLED_SERVICE_UUID = "0000fee7-0000-1000-8000-00805f9b34fb"
 
 
@@ -67,9 +68,7 @@ async def _discover_target(
     timeout: float,
     include_unknown: bool,
 ) -> tuple[BLEDevice | None, dict[str, list[str]]]:
-    log.info(
-        "Scanning for BLE devices (disconnect other apps, power the bag on)"
-    )
+    log.info("Scanning for BLE devices (disconnect other apps, power the bag on)")
     devices_dict = await BleakScanner.discover(timeout=timeout, return_adv=True)
 
     target_device = None
@@ -94,7 +93,11 @@ async def _discover_target(
             break
 
         if not target_name and not target_address:
-            if COOLLED_SERVICE_UUID in service_uuids:
+            # LOY SPACE app uses 0xFFF0; some devices also advertise 0xFEE7
+            if (
+                LOY_SPACE_SERVICE_UUID.lower() in [u.lower() for u in service_uuids]
+                or COOLLED_SERVICE_UUID in service_uuids
+            ):
                 log.info(
                     "Matched service UUID on {} ({})",
                     device_name,
@@ -122,9 +125,15 @@ async def _describe_device(device_address: str) -> None:
                 props = ", ".join(char.properties)
                 log.info("  -> [Char] {} ({})", char.uuid, props)
 
-                if "write" in char.properties or "write-without-response" in char.properties:
+                if (
+                    "write" in char.properties
+                    or "write-without-response" in char.properties
+                ):
                     write_candidates.append(f"{service.uuid} -> {char.uuid}")
-                    if service.uuid == COOLLED_SERVICE_UUID:
+                    if service.uuid.lower() in (
+                        COOLLED_SERVICE_UUID.lower(),
+                        LOY_SPACE_SERVICE_UUID.lower(),
+                    ):
                         log.info("     *** Candidate write characteristic ***")
 
         if write_candidates:
@@ -138,9 +147,7 @@ async def main() -> None:
     args = _parse_args()
 
     if not args.name and not args.address:
-        log.info(
-            "No name/address provided. Will match by service UUID if advertised."
-        )
+        log.info("No name/address provided. Will match by service UUID if advertised.")
 
     target_device, candidates = await _discover_target(
         target_name=args.name,
