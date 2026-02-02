@@ -296,18 +296,18 @@ class LedStatus:
         log.info(f"Initializing display ({self.cols}x{self.rows} chars)...")
 
         await self.client.write_gatt_char(WRITE_CHAR_UUID, build_reset_command())
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.1)
         await self.client.write_gatt_char(WRITE_CHAR_UUID, build_ready_command())
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.1)
         await self.client.write_gatt_char(WRITE_CHAR_UUID, build_game_mode(16))
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.1)
 
         # Clear screen
         packet = build_rt_draw_fill_rect(
             0, 0, DEFAULT_WIDTH - 1, DEFAULT_HEIGHT - 1, 0, 0, 0
         )
         await self.client.write_gatt_char(WRITE_CHAR_UUID, packet)
-        await asyncio.sleep(0.02)
+        await asyncio.sleep(0)
 
     async def draw_line(
         self, row: int, chars: list[tuple[str, tuple[int, int, int]]]
@@ -356,7 +356,7 @@ class LedStatus:
                     b=color[2],
                 )
                 await self.client.write_gatt_char(WRITE_CHAR_UUID, packet)
-                await asyncio.sleep(0.005)
+                await asyncio.sleep(0)
 
     def make_colored_line(
         self, text: str, color: tuple[int, int, int]
@@ -416,7 +416,7 @@ class LedStatus:
             0, y_start, DEFAULT_WIDTH - 1, y_start + graph_height - 1, r=0, g=0, b=0
         )
         await self.client.write_gatt_char(WRITE_CHAR_UUID, packet)
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(0)
 
         # Draw bottom border line
         packet = build_rt_draw_fill_rect(
@@ -480,7 +480,7 @@ class LedStatus:
                     x0, bar_top, x1, bar_bottom, r=color[0], g=color[1], b=color[2]
                 )
                 await self.client.write_gatt_char(WRITE_CHAR_UUID, packet)
-                await asyncio.sleep(0.002)
+                await asyncio.sleep(0)
 
         # Draw label at top-left of graph
         label_chars = [(c, base_color) for c in label]
@@ -511,7 +511,7 @@ class LedStatus:
                     b=color[2],
                 )
                 await self.client.write_gatt_char(WRITE_CHAR_UUID, packet)
-                await asyncio.sleep(0.005)
+                await asyncio.sleep(0)
 
     async def draw_net_graph(self, y_start: int) -> None:
         """Draw network graph with upload (red) and download (blue) using greedy merging."""
@@ -523,7 +523,7 @@ class LedStatus:
             0, y_start, DEFAULT_WIDTH - 1, y_start + graph_height - 1, r=0, g=0, b=0
         )
         await self.client.write_gatt_char(WRITE_CHAR_UUID, packet)
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(0)
 
         # Draw bottom border
         packet = build_rt_draw_fill_rect(
@@ -615,7 +615,7 @@ class LedStatus:
                     b=down_color[2],
                 )
                 await self.client.write_gatt_char(WRITE_CHAR_UUID, packet)
-                await asyncio.sleep(0.002)
+                await asyncio.sleep(0)
 
             # Draw upload rectangles on top (red)
             for x0, x1, bar_top in merged_up:
@@ -629,7 +629,7 @@ class LedStatus:
                     b=up_color[2],
                 )
                 await self.client.write_gatt_char(WRITE_CHAR_UUID, packet)
-                await asyncio.sleep(0.002)
+                await asyncio.sleep(0)
 
         # Draw "NET" label
         label_chars = [(c, CYAN) for c in "NET"]
@@ -658,7 +658,7 @@ class LedStatus:
                     b=color[2],
                 )
                 await self.client.write_gatt_char(WRITE_CHAR_UUID, packet)
-                await asyncio.sleep(0.005)
+                await asyncio.sleep(0)
 
     async def draw_time_labels(self, y_pos: int) -> None:
         """Draw time axis labels."""
@@ -718,7 +718,7 @@ class LedStatus:
             b=255,
         )
         await self.client.write_gatt_char(WRITE_CHAR_UUID, packet)
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(0)
         
         # Bold effect: draw again offset by 1 pixel right
         packet = build_rt_draw_bitmap(
@@ -732,7 +732,7 @@ class LedStatus:
             b=255,
         )
         await self.client.write_gatt_char(WRITE_CHAR_UUID, packet)
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(0)
 
     async def update_status(self) -> None:
         """Update the status display."""
