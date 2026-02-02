@@ -25,9 +25,9 @@ Reverse-engineered from the LOY SPACE Android app (package `com.yskd.loywf`) and
 
 ### Chunk size
 
-- **High speed**: Up to 509 bytes per BLE write (protocol v24+).
-- **Older / fallback**: 248 bytes.
-- GIF payload chunks are typically 196 bytes each.
+- **Tested working**: 196 bytes per chunk (fixed, larger sizes rejected)
+- **Tested NOT working**: 256, 384, 462 byte chunks all fail
+- Despite firmware v24, this device does not accept larger chunk sizes
 
 ## Packet Format (YS-protocol)
 
@@ -80,25 +80,133 @@ def high_byte_sum(data: bytes) -> int:
    - Wait for notification acknowledgment
 4. Send upload complete (twice): `aa55ffff0b000f00c10236030100001404`
 
-### Simple Command Format (Merkury-style, untested)
+## Graffiti Mode (Direct Pixel Control) - NOT SUPPORTED
 
-Some similar devices use simpler commands:
+**TESTED: This device does NOT support Merkury-style graffiti mode.**
+
+BC-prefix commands were tested on all 11 writable characteristics and none produced responses or visible effects. The device only responds to YS-protocol (`aa55ffff`) commands.
+
+### What Was Tested
+
+Commands tested with `probe_characteristics.py`:
+- `BC 00 01 01 55` (start graffiti) - No response
+- `BC 00 0D 0D 55` (enable draw) - No response  
+- `BC 01 01 00 00 FF 00 00 FF 55` (red pixel) - No response
+- `BC FF 01 00 55` (power on) - No response
+
+### Reference: Merkury-style Protocol (for other devices)
+
+Some YS-family devices DO support graffiti mode. If your device has service `0xFFD0`:
+
+| Role | UUID |
+|------|------|
+| Service | `0000FFD0-0000-1000-8000-00805F9B34FB` |
+| Write char | `0000FFD1-0000-1000-8000-00805F9B34FB` |
+
+### Graffiti Commands (BC-prefix)
+
+| Command | Hex | Description |
+|---------|-----|-------------|
+| Power off | `BC FF 00 FF 55` | Turn display off (black) |
+| Power on | `BC FF 01 00 55` | Turn display on |
+| Start graffiti | `BC 00 01 01 55` | Enter graffiti mode |
+| Enable draw | `BC 00 0D 0D 55` | Enable pixel drawing |
+| Slideshow mode | `BC 00 12 12 55` | Exit graffiti, enter slideshow |
+
+### Pixel Command Format
 
 ```
-BC FF 00 FF 55  - Power off
-BC FF 01 00 55  - Power on
-BC 00 01 01 55  - Start graffiti mode
-BC 00 12 12 55  - Start slideshow mode
+BC 01 01 00 PP RR GG BB QQ 55
 ```
 
-## Other GATT Services (from scan)
+| Byte | Value | Description |
+|------|-------|-------------|
+| 0 | `BC` | Command prefix |
+| 1-3 | `01 01 00` | Fixed parameters |
+| 4 | `PP` | Pixel index (0-255) |
+| 5 | `RR` | Red (0-255) |
+| 6 | `GG` | Green (0-255) |
+| 7 | `BB` | Blue (0-255) |
+| 8 | `QQ` | End index: `(PP + 1) % 256`, or `0xFF` if PP=0 |
+| 9 | `55` | Terminator |
 
-The device advertises additional services; the official app uses **0xFFF0** (write 0xFFF2):
+### Example: Red pixel at position 0
 
-- `0000FEE7` / `0000FEC7`
-- `0000FF02`, `0000FF11`, `0000FF12`, `0000FF82`
-- `0000EEE1`, `0000EEE3`
-- ISSC UART 128-bit UUIDs
+```
+BC 01 01 00 00 FF 00 00 FF 55
+```
+
+### Performance Limits
+
+Based on Merkury device testing:
+- ~360 pixels/second over BLE (individual updates)
+- For 96×128 (12,288 pixels): ~34 seconds for full frame
+- Practical for: snake, pong, tetris, partial updates
+- Not suitable for: video streaming, full-frame animations
+
+### Probing for Graffiti Support
+
+```bash
+# Enumerate all services and find graffiti candidates
+uv run python -m src.verify_backpack --name YS6249
+
+# Test graffiti commands on all writable characteristics
+uv run python -m src.probe_characteristics --name YS6249
+
+# Test specific command
+uv run python -m src.probe_characteristics --name YS6249 --command graffiti_init_1
+
+# Send custom hex command
+uv run python -m src.probe_characteristics --name YS6249 --custom-hex "bc00010155"
+```
+
+## Discovered GATT Services
+
+Full enumeration from `verify_backpack.py`:
+
+| Service | Characteristics | Status |
+|---------|-----------------|--------|
+| `0000FF00` | `0000FF02` (write), `0000FF01` (notify), `0000FF03` (notify) | Responds to YS commands |
+| `0000FF10` | `0000FF11` (write/notify), `0000FF12` (write/notify) | Unknown |
+| `0000EEE0` | `0000EEE1` (write/notify) | Responds to YS commands |
+| `0000EEE2` | `0000EEE3` (write/notify) | Responds to YS commands |
+| `0000FEE7` | `0000FEC7` (write), `0000FEC8` (indicate), `0000FEC9` (read) | CoolLED alternate |
+| `0000FF80` | `0000FF82` (write), `0000FF81` (notify) | Nordic UART-like |
+| `0000FFF0` | `0000FFF2` (write), `0000FFF1` (indicate) | **Main control** |
+| `49535343` | Multiple (write/notify) | ISSC transparent UART |
+
+**Note**: Service `0xFFD0` (Merkury graffiti) is NOT present on this device.
+
+### Services That Respond to YS Commands
+
+These accept `aa55ffff` commands and return ACKs:
+- `0000FF02` (service `0000FF00`)
+- `0000EEE1` (service `0000EEE0`)
+- `0000EEE3` (service `0000EEE2`)
+
+### ISSC UART Service (49535343)
+
+**TESTED**: The ISSC UART is a transparent pass-through to the main command processor.
+
+| Handle | Properties | Purpose |
+|--------|------------|---------|
+| 47 | write | UART RX (no response) |
+| 49 | write, write-without-response | UART RX (passes to main processor) |
+| 51 | notify | UART TX (receives ACKs) |
+| 54 | write, notify | UART RX/TX |
+
+Commands sent to handle 49 are processed by the same YS-protocol engine as 0xFFF2.
+No alternative freedraw/streaming mode discovered via UART.
+
+### CoolLED Service (0xFEE7)
+
+On connection, the device sends an indication on 0xFEC8:
+```
+fe01001a271100010a0018848004200128023a06d023811a5a48
+```
+
+This appears to be a protobuf-encoded status message. Tested protobuf-style commands
+to 0xFEC7 but received no responses. Purpose unknown - may be for device pairing/status only.
 
 ## Related Projects
 
@@ -165,3 +273,77 @@ To run or emulate the protocol without the device (e.g. to get hex dumps for com
 - **Python simulator**: `uv run python scripts/simulate_protocol.py --clear --color "#ff0000"` to print the exact hex packets our encoder would send.
 - **Beautifying the app JS**: How to beautify `app-service.js` and where to look for the packet-building logic.
 - **Transcribing to Node**: Optional standalone `scripts/loy_space_packet_builder.js` to run the app's packet format in Node once transcribed.
+
+## Research Findings
+
+### Device Identification
+
+Based on specifications, this device is likely a **LOY T3-HD or T4** backpack:
+
+| Model | Resolution | Size | Weight |
+|-------|------------|------|--------|
+| LOY T3-HD | 96×128 | 34×10.5×17cm | 1.3kg |
+| LOY T4 | 96×128 | 50×32×14cm | 1.55kg |
+
+**Manufacturer**: Shenzhen Biosled Technology Co., Ltd (also operates as Shenzhen Yanse Technology)
+- Website: https://loy2014.com, https://biosled.com
+- Address: 5th Floor, Building D, Skyworth Innovation Valley, Shenzhen
+- Contact: biosled@163.com
+
+### Related Apps
+
+| App | Package | Purpose |
+|-----|---------|---------|
+| LOY SPACE | `com.yskd.loywf` | BLE control for LOY backpacks |
+| LED Space | `com.yj.led` | WiFi control for LED bags (YSP-001) |
+
+Both apps are developed by Shenzhen Yanse Technology and support:
+- Text, pictures, GIF animations
+- Graffiti/freedraw mode (in app)
+- QR code display
+
+### What We Know About Freedraw
+
+The LOY SPACE app advertises a "graffiti/drawing function" in the App Store description. However:
+
+1. **BC-style commands don't work** - Tested all Merkury-style graffiti commands
+2. **No 0xFFD0 service** - Device lacks the Merkury graffiti GATT service
+3. **UART is pass-through** - ISSC UART just forwards to YS processor
+
+**Likely explanation**: The app's freedraw feature probably works by:
+- Encoding each stroke as a new GIF frame
+- Uploading the modified GIF after each stroke
+- Or using a completely different command set we haven't discovered
+
+### Hardware Insights
+
+The device likely uses:
+- **HUB75-compatible LED panel** (96×128 pixels)
+- **BLE+WiFi combo module** (possibly HLK-series or similar)
+- **Custom firmware** with YS-protocol stack
+
+Similar devices (WifiLEDBag project) use:
+- UDP over WiFi (16-bit action code + bytestream)
+- Serial data embedded in 802.11 or BLE frames
+
+### Next Steps for Freedraw Discovery
+
+1. **HCI Snoop of App Freedraw** - Capture what the app sends during drawing
+2. **APK Decompilation** - Use JADX/APKTool on `com.yskd.loywf`
+3. **WiFi Capture** - If device supports WiFi, capture UDP traffic
+4. **Look for Different Commands** - Freedraw might use a different command prefix
+
+### Similar Projects with Working Freedraw
+
+| Project | Device | Freedraw Method |
+|---------|--------|-----------------|
+| [mi-led-display](https://github.com/offe/mi-led-display) | Merkury 16×16 | BC-prefix pixel commands |
+| [pixelart-16x16](https://github.com/dmachard/pixelart-16x16) | Custom ESP32 | Web Bluetooth + custom firmware |
+| [ESP32_BLE_Matrixpanel](https://github.com/meganukebmp/ESP32_BLE_Matrixpanel) | Custom ESP32 | Direct pixel writes |
+
+### Hardware Replacement Option
+
+If software freedraw is not possible, the display panel could potentially be driven by:
+- **ESP32 + HUB75** using [ESP32-HUB75-MatrixPanel-I2S-DMA](https://github.com/mrcodetastic/ESP32-HUB75-MatrixPanel-DMA)
+- This would give full control over the display at hardware level
+- Requires opening the backpack and replacing the controller board

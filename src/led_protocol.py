@@ -22,6 +22,7 @@ DEFAULT_WIDTH = 96
 DEFAULT_HEIGHT = 128
 
 # YS-protocol uses 196-byte payload chunks for GIF data (392 hex chars)
+# Tested: Larger chunks (256, 384, 462) do NOT work on this device
 DEFAULT_CHUNK_SIZE = 196
 
 # Magic header for YS-protocol
@@ -364,7 +365,124 @@ def build_grid_pattern_packets(
     return build_gif_upload_packets(gif_data)
 
 
+# =============================================================================
+# GRAFFITI MODE COMMANDS (Merkury-style, BC-prefix)
+# These are experimental - may work on some YS devices that share firmware
+# =============================================================================
+
+# Merkury graffiti mode uses service 0xFFD0, characteristic 0xFFD1
+# Some devices may also support these on 0xFFF2 or 0xFFE1
+GRAFFITI_SERVICE_UUID = "0000FFD0-0000-1000-8000-00805F9B34FB"
+GRAFFITI_CHAR_UUID = "0000FFD1-0000-1000-8000-00805F9B34FB"
+
+# Graffiti mode command packets (BC-style)
+GRAFFITI_POWER_ON = bytes.fromhex("bcff010055")
+GRAFFITI_POWER_OFF = bytes.fromhex("bcff00ff55")
+GRAFFITI_MODE_START = bytes.fromhex("bc00010155")
+GRAFFITI_MODE_ENABLE = bytes.fromhex("bc000d0d55")
+GRAFFITI_SLIDESHOW = bytes.fromhex("bc00121255")
+
+
+def build_graffiti_init_sequence() -> list[bytearray]:
+    """
+    Build the initialization sequence for graffiti mode.
+
+    Send these commands to enter direct pixel control mode.
+    Returns list of packets to send in order.
+    """
+    return [
+        bytearray(GRAFFITI_MODE_START),
+        bytearray(GRAFFITI_MODE_ENABLE),
+    ]
+
+
+def build_graffiti_pixel_command(
+    pixel_index: int,
+    r: int,
+    g: int,
+    b: int,
+) -> bytearray:
+    """
+    Build command to set a single pixel in graffiti mode.
+
+    Args:
+        pixel_index: Pixel position (0-255 for 16x16, 0-12287 for 96x128).
+        r: Red component (0-255).
+        g: Green component (0-255).
+        b: Blue component (0-255).
+
+    Returns:
+        10-byte command packet.
+
+    Note:
+        For displays larger than 16x16, pixel addressing may differ.
+        The Merkury protocol uses: BC 01 01 00 PP RR GG BB QQ 55
+        where PP is pixel index and QQ is (pixel_index + 1) % 256.
+    """
+    # Clamp values
+    pixel_index = pixel_index % 256
+    r = max(0, min(255, r))
+    g = max(0, min(255, g))
+    b = max(0, min(255, b))
+
+    # End index calculation (Merkury style)
+    end_index = (pixel_index + 1) % 256
+    if pixel_index == 0:
+        end_index = 0xFF
+
+    return bytearray(
+        [
+            0xBC,
+            0x01,
+            0x01,
+            0x00,
+            pixel_index,
+            r,
+            g,
+            b,
+            end_index,
+            0x55,
+        ]
+    )
+
+
+def build_graffiti_pixel_batch(
+    pixels: list[tuple[int, int, int, int]],
+) -> list[bytearray]:
+    """
+    Build commands for multiple pixels.
+
+    Args:
+        pixels: List of (pixel_index, r, g, b) tuples.
+
+    Returns:
+        List of command packets.
+    """
+    return [build_graffiti_pixel_command(idx, r, g, b) for idx, r, g, b in pixels]
+
+
+def build_graffiti_fill_command(
+    r: int, g: int, b: int, count: int = 256
+) -> list[bytearray]:
+    """
+    Build commands to fill all pixels with one color.
+
+    Args:
+        r: Red component (0-255).
+        g: Green component (0-255).
+        b: Blue component (0-255).
+        count: Number of pixels (default 256 for 16x16).
+
+    Returns:
+        List of command packets (one per pixel).
+    """
+    return [build_graffiti_pixel_command(i, r, g, b) for i in range(count)]
+
+
+# =============================================================================
 # Legacy exports for backwards compatibility
+# =============================================================================
+
 CMD_INIT = 0x23
 CMD_SWITCH = 0x09
 CMD_MODE = 0x06

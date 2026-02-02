@@ -140,7 +140,7 @@ ruff: install_tools
 
 vulture: install_tools
 	@echo "$(YELLOW)🔍Running Vulture...$(RESET)"
-	@uv tool run vulture .
+	@uv tool run vulture . vulture_whitelist.py
 	@echo "$(GREEN)✅Vulture completed.$(RESET)"
 
 ty: install_tools

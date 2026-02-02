@@ -354,7 +354,9 @@ def main(
     click.echo(f"\nSelected: {file_path.name}")
     click.echo(f"Target size: {width}x{height} @ {fps}fps")
     if contrast != 1.0 or saturation != 1.0 or gamma != 1.0:
-        click.echo(f"Effects: contrast={contrast}, saturation={saturation}, gamma={gamma}")
+        click.echo(
+            f"Effects: contrast={contrast}, saturation={saturation}, gamma={gamma}"
+        )
     click.echo(f"Max GIF size: {MAX_GIF_SIZE} bytes (~{MAX_GIF_SIZE // 1024}KB)")
 
     # Convert to GIF (auto-reduces quality to fit size limit)
