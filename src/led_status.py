@@ -235,6 +235,15 @@ def get_disk_percent() -> float:
     return 0.0
 
 
+def get_network_bytes() -> tuple[int, int]:
+    """Get total network bytes (sent, received)."""
+    if HAS_PSUTIL:
+        counters = psutil.net_io_counters()
+        return (counters.bytes_sent, counters.bytes_recv)
+    # Fallback - return zeros
+    return (0, 0)
+
+
 def get_uptime() -> str:
     """Get system uptime as a string."""
     try:
@@ -266,6 +275,21 @@ class LedStatus:
         self.client = client
         self.cols = DEFAULT_WIDTH // CHAR_WIDTH
         self.rows = DEFAULT_HEIGHT // CHAR_HEIGHT
+
+        # Graph dimensions
+        self.graph_width = DEFAULT_WIDTH  # Full width
+        self.graph_height = 20  # Pixels per graph (three graphs stacked)
+
+        # History for graphs
+        self.cpu_history: list[float] = []
+        self.mem_history: list[float] = []
+        self.net_up_history: list[float] = []  # KB/s
+        self.net_down_history: list[float] = []  # KB/s
+        self.sample_count = 0  # For time labels
+
+        # Network tracking
+        self.last_net_bytes: tuple[int, int] | None = None
+        self.last_net_time: float | None = None
 
     async def init_display(self) -> None:
         """Initialize the display."""
@@ -376,62 +400,440 @@ class LedStatus:
 
         return result[: self.cols]
 
+    async def draw_graph(
+        self,
+        y_start: int,
+        history: list[float],
+        label: str,
+        base_color: tuple[int, int, int],
+    ) -> None:
+        """Draw a usage graph with label using greedy rectangle merging."""
+        graph_width = self.graph_width
+        graph_height = self.graph_height
+
+        # Clear graph area
+        packet = build_rt_draw_fill_rect(
+            0, y_start, DEFAULT_WIDTH - 1, y_start + graph_height - 1, r=0, g=0, b=0
+        )
+        await self.client.write_gatt_char(WRITE_CHAR_UUID, packet)
+        await asyncio.sleep(0.01)
+
+        # Draw bottom border line
+        packet = build_rt_draw_fill_rect(
+            0,
+            y_start + graph_height - 1,
+            graph_width - 1,
+            y_start + graph_height - 1,
+            r=50,
+            g=50,
+            b=50,
+        )
+        await self.client.write_gatt_char(WRITE_CHAR_UUID, packet)
+        await asyncio.sleep(0.005)
+
+        # Build list of bars with their properties
+        if len(history) > 0:
+            samples = history[-graph_width:]
+            start_x = graph_width - len(samples)
+            bar_bottom = y_start + graph_height - 2
+
+            # Compute all bars: (x, bar_top, color)
+            bars: list[tuple[int, int, tuple[int, int, int]]] = []
+            for i, val in enumerate(samples):
+                bar_height = int((val / 100.0) * (graph_height - 2))
+                if bar_height < 1:
+                    bars.append((start_x + i, -1, (0, 0, 0)))  # No bar
+                    continue
+                bar_top = bar_bottom - bar_height + 1
+                if val < 50:
+                    color = base_color
+                elif val < 80:
+                    color = YELLOW
+                else:
+                    color = RED
+                bars.append((start_x + i, bar_top, color))
+
+            # Greedy merge: group consecutive bars with same top and color
+            merged: list[tuple[int, int, int, tuple[int, int, int]]] = []
+            i = 0
+            while i < len(bars):
+                x, bar_top, color = bars[i]
+                if bar_top == -1:
+                    i += 1
+                    continue
+                # Find run of same bar_top and color
+                run_end = i + 1
+                while run_end < len(bars):
+                    nx, ntop, ncolor = bars[run_end]
+                    if ntop == bar_top and ncolor == color:
+                        run_end += 1
+                    else:
+                        break
+                # Merge into single rectangle
+                x_end = bars[run_end - 1][0]
+                merged.append((x, x_end, bar_top, color))
+                i = run_end
+
+            # Draw merged rectangles
+            for x0, x1, bar_top, color in merged:
+                packet = build_rt_draw_fill_rect(
+                    x0, bar_top, x1, bar_bottom, r=color[0], g=color[1], b=color[2]
+                )
+                await self.client.write_gatt_char(WRITE_CHAR_UUID, packet)
+                await asyncio.sleep(0.002)
+
+        # Draw label at top-left of graph
+        label_chars = [(c, base_color) for c in label]
+        while len(label_chars) < 4:
+            label_chars.append((" ", base_color))
+
+        # Render label bitmap
+        bitmap, colors = render_line_bitmap(label_chars[:4], 4)
+
+        for color in [base_color]:
+            color_bitmap = [
+                [
+                    1 if bitmap[y][x] and colors[y][x] == color else 0
+                    for x in range(len(bitmap[0]))
+                ]
+                for y in range(len(bitmap))
+            ]
+            has_pixels = any(any(r) for r in color_bitmap)
+            if has_pixels:
+                packet = build_rt_draw_bitmap(
+                    1,
+                    y_start + 1,
+                    4 * CHAR_WIDTH,
+                    FONT_PIXEL_HEIGHT,
+                    color_bitmap,
+                    r=color[0],
+                    g=color[1],
+                    b=color[2],
+                )
+                await self.client.write_gatt_char(WRITE_CHAR_UUID, packet)
+                await asyncio.sleep(0.005)
+
+    async def draw_net_graph(self, y_start: int) -> None:
+        """Draw network graph with upload (red) and download (blue) using greedy merging."""
+        graph_width = self.graph_width
+        graph_height = self.graph_height
+
+        # Clear graph area
+        packet = build_rt_draw_fill_rect(
+            0, y_start, DEFAULT_WIDTH - 1, y_start + graph_height - 1, r=0, g=0, b=0
+        )
+        await self.client.write_gatt_char(WRITE_CHAR_UUID, packet)
+        await asyncio.sleep(0.01)
+
+        # Draw bottom border
+        packet = build_rt_draw_fill_rect(
+            0,
+            y_start + graph_height - 1,
+            graph_width - 1,
+            y_start + graph_height - 1,
+            r=50,
+            g=50,
+            b=50,
+        )
+        await self.client.write_gatt_char(WRITE_CHAR_UUID, packet)
+        await asyncio.sleep(0.005)
+
+        # Find max value for scaling
+        all_vals = self.net_up_history + self.net_down_history
+        max_val = max(all_vals) if all_vals else 100
+        if max_val < 10:
+            max_val = 10  # Minimum scale
+
+        bar_bottom = y_start + graph_height - 2
+        down_color = (0, 100, 255)
+        up_color = (255, 50, 50)
+
+        # Build bar lists for download and upload
+        if len(self.net_down_history) > 0:
+            down_samples = self.net_down_history[-graph_width:]
+            up_samples = self.net_up_history[-graph_width:]
+            start_x = graph_width - len(down_samples)
+
+            # Compute bar tops for each type
+            down_bars: list[tuple[int, int]] = []  # (x, bar_top) or (x, -1)
+            up_bars: list[tuple[int, int]] = []
+            for i in range(len(down_samples)):
+                x = start_x + i
+                down_val = down_samples[i] if i < len(down_samples) else 0
+                down_height = int((down_val / max_val) * (graph_height - 2))
+                if down_height >= 1:
+                    down_bars.append((x, bar_bottom - down_height + 1))
+                else:
+                    down_bars.append((x, -1))
+
+                up_val = up_samples[i] if i < len(up_samples) else 0
+                up_height = int((up_val / max_val) * (graph_height - 2))
+                if up_height >= 1:
+                    up_bars.append((x, bar_bottom - up_height + 1))
+                else:
+                    up_bars.append((x, -1))
+
+            # Greedy merge for download bars
+            merged_down: list[tuple[int, int, int]] = []
+            i = 0
+            while i < len(down_bars):
+                x, bar_top = down_bars[i]
+                if bar_top == -1:
+                    i += 1
+                    continue
+                run_end = i + 1
+                while run_end < len(down_bars) and down_bars[run_end][1] == bar_top:
+                    run_end += 1
+                x_end = down_bars[run_end - 1][0]
+                merged_down.append((x, x_end, bar_top))
+                i = run_end
+
+            # Greedy merge for upload bars
+            merged_up: list[tuple[int, int, int]] = []
+            i = 0
+            while i < len(up_bars):
+                x, bar_top = up_bars[i]
+                if bar_top == -1:
+                    i += 1
+                    continue
+                run_end = i + 1
+                while run_end < len(up_bars) and up_bars[run_end][1] == bar_top:
+                    run_end += 1
+                x_end = up_bars[run_end - 1][0]
+                merged_up.append((x, x_end, bar_top))
+                i = run_end
+
+            # Draw download rectangles first (blue)
+            for x0, x1, bar_top in merged_down:
+                packet = build_rt_draw_fill_rect(
+                    x0,
+                    bar_top,
+                    x1,
+                    bar_bottom,
+                    r=down_color[0],
+                    g=down_color[1],
+                    b=down_color[2],
+                )
+                await self.client.write_gatt_char(WRITE_CHAR_UUID, packet)
+                await asyncio.sleep(0.002)
+
+            # Draw upload rectangles on top (red)
+            for x0, x1, bar_top in merged_up:
+                packet = build_rt_draw_fill_rect(
+                    x0,
+                    bar_top,
+                    x1,
+                    bar_bottom,
+                    r=up_color[0],
+                    g=up_color[1],
+                    b=up_color[2],
+                )
+                await self.client.write_gatt_char(WRITE_CHAR_UUID, packet)
+                await asyncio.sleep(0.002)
+
+        # Draw "NET" label
+        label_chars = [(c, CYAN) for c in "NET"]
+        while len(label_chars) < 4:
+            label_chars.append((" ", CYAN))
+
+        bitmap, colors = render_line_bitmap(label_chars[:4], 4)
+        for color in [CYAN]:
+            color_bitmap = [
+                [
+                    1 if bitmap[y][x] and colors[y][x] == color else 0
+                    for x in range(len(bitmap[0]))
+                ]
+                for y in range(len(bitmap))
+            ]
+            has_pixels = any(any(r) for r in color_bitmap)
+            if has_pixels:
+                packet = build_rt_draw_bitmap(
+                    1,
+                    y_start + 1,
+                    4 * CHAR_WIDTH,
+                    FONT_PIXEL_HEIGHT,
+                    color_bitmap,
+                    r=color[0],
+                    g=color[1],
+                    b=color[2],
+                )
+                await self.client.write_gatt_char(WRITE_CHAR_UUID, packet)
+                await asyncio.sleep(0.005)
+
+    async def draw_time_labels(self, y_pos: int) -> None:
+        """Draw time axis labels."""
+        # Show "now" on right, and time going back on left
+        now_label = "now"
+        ago_label = f"-{self.graph_width}s"
+
+        # Create line with labels at ends
+        line_chars: list[tuple[str, tuple[int, int, int]]] = []
+
+        # Left side: -Xs ago
+        for c in ago_label:
+            line_chars.append((c, WHITE))
+
+        # Padding in middle
+        mid_space = self.cols - len(ago_label) - len(now_label)
+        for _ in range(mid_space):
+            line_chars.append((" ", WHITE))
+
+        # Right side: now
+        for c in now_label:
+            line_chars.append((c, CYAN))
+
+        # Draw at specified row
+        row = y_pos // CHAR_HEIGHT
+        await self.draw_line(row, line_chars)
+
+    async def draw_branding(self, y_pixel: int) -> None:
+        """Draw branding text at specified pixel y position."""
+        brand = "EDISON.WATCH"
+        # Center the text
+        padding = (self.cols - len(brand)) // 2
+        
+        line_chars: list[tuple[str, tuple[int, int, int]]] = []
+        for _ in range(padding):
+            line_chars.append((" ", WHITE))
+        
+        # All white, bold effect by drawing twice offset
+        for c in brand:
+            line_chars.append((c, WHITE))
+        
+        while len(line_chars) < self.cols:
+            line_chars.append((" ", WHITE))
+        
+        # Render bitmap for this line
+        bitmap, colors = render_line_bitmap(line_chars[: self.cols], self.cols)
+        
+        # Draw at pixel position (not row)
+        packet = build_rt_draw_bitmap(
+            0,
+            y_pixel,
+            self.cols * CHAR_WIDTH,
+            FONT_PIXEL_HEIGHT,
+            bitmap,
+            r=255,
+            g=255,
+            b=255,
+        )
+        await self.client.write_gatt_char(WRITE_CHAR_UUID, packet)
+        await asyncio.sleep(0.01)
+        
+        # Bold effect: draw again offset by 1 pixel right
+        packet = build_rt_draw_bitmap(
+            1,
+            y_pixel,
+            self.cols * CHAR_WIDTH,
+            FONT_PIXEL_HEIGHT,
+            bitmap,
+            r=255,
+            g=255,
+            b=255,
+        )
+        await self.client.write_gatt_char(WRITE_CHAR_UUID, packet)
+        await asyncio.sleep(0.01)
+
     async def update_status(self) -> None:
         """Update the status display."""
+        import time
+
         now = datetime.now()
-        hostname = platform.node().split(".")[0][:10]
+        hostname = platform.node().split(".")[0][:8]
 
         cpu = get_cpu_percent()
         mem = get_memory_percent()
-        disk = get_disk_percent()
-        load = get_load_average()
-        uptime = get_uptime()
+
+        # Get network rates
+        net_bytes = get_network_bytes()
+        current_time = time.time()
+        net_up_kbps = 0.0
+        net_down_kbps = 0.0
+
+        if self.last_net_bytes is not None and self.last_net_time is not None:
+            dt = current_time - self.last_net_time
+            if dt > 0:
+                bytes_sent = net_bytes[0] - self.last_net_bytes[0]
+                bytes_recv = net_bytes[1] - self.last_net_bytes[1]
+                net_up_kbps = (bytes_sent / 1024) / dt  # KB/s
+                net_down_kbps = (bytes_recv / 1024) / dt  # KB/s
+
+        self.last_net_bytes = net_bytes
+        self.last_net_time = current_time
+
+        self.sample_count += 1
+
+        # Add to history
+        self.cpu_history.append(cpu)
+        self.mem_history.append(mem)
+        self.net_up_history.append(net_up_kbps)
+        self.net_down_history.append(net_down_kbps)
+
+        if len(self.cpu_history) > self.graph_width:
+            self.cpu_history = self.cpu_history[-self.graph_width :]
+        if len(self.mem_history) > self.graph_width:
+            self.mem_history = self.mem_history[-self.graph_width :]
+        if len(self.net_up_history) > self.graph_width:
+            self.net_up_history = self.net_up_history[-self.graph_width :]
+        if len(self.net_down_history) > self.graph_width:
+            self.net_down_history = self.net_down_history[-self.graph_width :]
 
         # Line 0: Hostname and time
         time_str = now.strftime("%H:%M:%S")
-        line0_text = f"{hostname:<10} {time_str}"
+        line0_text = f"{hostname:<8} {time_str}"
         line0 = []
         for i, c in enumerate(line0_text[: self.cols]):
-            if i < 10:
+            if i < 8:
                 line0.append((c, CYAN))
             else:
                 line0.append((c, WHITE))
         while len(line0) < self.cols:
             line0.append((" ", WHITE))
 
-        # Line 1: Uptime
-        line1 = self.make_colored_line(f"Up: {uptime}", GREEN)
+        # Line 1: CPU and MEM percentages
+        cpu_color = GREEN if cpu < 50 else YELLOW if cpu < 80 else RED
+        mem_color = BLUE if mem < 50 else YELLOW if mem < 80 else RED
+        line1_chars = []
+        cpu_str = f"CPU:{int(cpu):3d}%"
+        mem_str = f"MEM:{int(mem):2d}%"
+        for c in cpu_str:
+            line1_chars.append((c, cpu_color))
+        line1_chars.append((" ", WHITE))
+        for c in mem_str:
+            line1_chars.append((c, mem_color))
+        while len(line1_chars) < self.cols:
+            line1_chars.append((" ", WHITE))
 
-        # Line 2: Empty
-        line2 = self.make_colored_line("", WHITE)
+        # Line 2: Network speed
+        net_str = f"D:{int(net_down_kbps):4d}K U:{int(net_up_kbps):3d}K"
+        line2_chars = []
+        for i, c in enumerate(net_str):
+            if i < 7:  # Download part
+                line2_chars.append((c, BLUE))
+            else:  # Upload part
+                line2_chars.append((c, RED))
+        while len(line2_chars) < self.cols:
+            line2_chars.append((" ", WHITE))
 
-        # Line 3: CPU bar
-        line3 = self.make_bar(cpu, 10, "CPU ")
-
-        # Line 4: MEM bar
-        line4 = self.make_bar(mem, 10, "MEM ")
-
-        # Line 5: Disk bar
-        line5 = self.make_bar(disk, 10, "DSK ")
-
-        # Line 6: Empty
-        line6 = self.make_colored_line("", WHITE)
-
-        # Line 7: Load average
-        load_str = f"Load: {load[0]:.1f} {load[1]:.1f}"
-        line7 = self.make_colored_line(load_str, YELLOW)
-
-        # Line 8-17: Could add more info
-
-        # Draw all lines
+        # Draw header lines (3 lines = 21 pixels)
         await self.draw_line(0, line0)
-        await self.draw_line(1, line1)
-        await self.draw_line(2, line2)
-        await self.draw_line(3, line3)
-        await self.draw_line(4, line4)
-        await self.draw_line(5, line5)
-        await self.draw_line(6, line6)
-        await self.draw_line(7, line7)
+        await self.draw_line(1, line1_chars[: self.cols])
+        await self.draw_line(2, line2_chars[: self.cols])
+
+        # CPU graph: y=22 (height 20)
+        await self.draw_graph(22, self.cpu_history, "CPU", GREEN)
+
+        # MEM graph: y=44 (height 20)
+        await self.draw_graph(44, self.mem_history, "MEM", BLUE)
+
+        # NET graph: y=66 (height 20)
+        await self.draw_net_graph(66)
+
+        # Time labels (row 13)
+        await self.draw_time_labels(91)
+
+        # Branding at very bottom
+        await self.draw_branding(108)
 
     async def run(self, interval: float = 1.0) -> None:
         """Run the status display loop."""
