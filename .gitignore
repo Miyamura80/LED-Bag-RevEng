@@ -174,3 +174,12 @@ cython_debug/
 apk/*.apk
 apk/decompiled/
 apk/extracted_assets/
+
+# Chunk optimization cache
+.chunk_cache/
+
+# Cursor hook Go binary (build with: make build-cursor-hook)
+scripts/cursor_usage_hook
+
+# Embedded git repos in docs
+docs/bm70_datasheet/BM71_MemoryProgramming/
